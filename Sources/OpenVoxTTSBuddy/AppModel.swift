@@ -374,6 +374,7 @@ final class AppModel: ObservableObject {
     }
 
     func handleHotKey(_ action: HotKeyAction) async {
+        setStatus(action == .pasteSelection ? "Selection hotkey pressed…" : "Clipboard hotkey pressed…")
         switch action {
         case .pasteSelection: await pasteSelection()
         case .pasteClipboard: pasteClipboardFromHotKey()
