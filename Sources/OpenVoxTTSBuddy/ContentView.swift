@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -10,7 +11,11 @@ struct ContentView: View {
             SettingsPane()
                 .frame(width: 340)
         }
-        .frame(minWidth: 820, minHeight: 520)
+        .frame(minWidth: 820, minHeight: 560)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // The user may have just granted Accessibility access in System Settings.
+            model.refreshAccessibilityStatus()
+        }
     }
 
     private var editorPane: some View {
@@ -42,7 +47,7 @@ struct ContentView: View {
                 .help("Replace the text with the clipboard. ⇧⌘V pastes and speaks in one go.")
 
                 Button {
-                    model.text = ""
+                    model.setText("")
                 } label: {
                     Label("Clear", systemImage: "xmark.circle")
                 }
@@ -165,6 +170,46 @@ private struct SettingsPane: View {
                     HStack {
                         Spacer()
                         Button("Save last clip…") { model.saveLastClipAs() }
+                    }
+                }
+            }
+
+            Section {
+                FilterList()
+                Toggle("Show filtered text", isOn: $model.showFiltered)
+                    .help("Show the text with matches removed. Turn off to see the original again.")
+            } header: {
+                Text("Text filters")
+            } footer: {
+                Text("Matches are removed before speaking. Double-click a pattern to edit it. Add (?i) at the start for case-insensitive matching.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Global hotkey") {
+                Toggle("Paste selection into TTS Buddy", isOn: $model.hotKeyEnabled)
+                LabeledContent("Shortcut") {
+                    ShortcutRecorder()
+                }
+                if model.hotKeyConflict {
+                    Label("Another app already uses that shortcut. Pick a different one.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Picker("Selected text", selection: $model.hotKeyMode) {
+                    ForEach(HotKeyMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                Toggle("Speak right away", isOn: $model.hotKeySpeaks)
+                if model.hotKeyEnabled && !model.accessibilityTrusted {
+                    HStack {
+                        Label("Needs Accessibility access to read other apps’ selections.", systemImage: "lock.shield")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("Open Settings") { SelectionGrabber.openAccessibilitySettings() }
                     }
                 }
             }
@@ -300,5 +345,162 @@ private struct SaveFolderRow: View {
                 .help(model.lastSavedFile == nil ? "Open folder in Finder" : "Show last saved file in Finder")
             }
         }
+    }
+}
+
+/// The regex list: checkbox to enable, double-click to edit, + and − below.
+private struct FilterList: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var selection = Set<TextFilter.ID>()
+    @State private var editingID: TextFilter.ID?
+    @State private var draft = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            List(selection: $selection) {
+                ForEach($model.filters) { $filter in
+                    HStack(spacing: 6) {
+                        Toggle("Enabled", isOn: $filter.isEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.checkbox)
+                        if editingID == filter.id {
+                            TextField("Regular expression", text: $draft)
+                                .textFieldStyle(.plain)
+                                .font(.system(.body, design: .monospaced))
+                                .focused($fieldFocused)
+                                .onSubmit { commitEdit() }
+                                .onExitCommand { cancelEdit() }
+                        } else {
+                            Text(filter.pattern.isEmpty ? "Empty pattern" : filter.pattern)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(filter.pattern.isEmpty ? .tertiary : .primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if let error = filter.errorMessage {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .help(error)
+                            }
+                        }
+                    }
+                    .tag(filter.id)
+                }
+            }
+            .listStyle(.bordered(alternatesRowBackgrounds: true))
+            .frame(height: 120)
+            .contextMenu(forSelectionType: TextFilter.ID.self) { ids in
+                if let id = ids.first, ids.count == 1 {
+                    Button("Edit") { beginEdit(id) }
+                }
+                Button("Delete") { model.removeFilters(ids) }
+            } primaryAction: { ids in
+                // Double-click
+                if let id = ids.first { beginEdit(id) }
+            }
+            .onDeleteCommand { removeSelected() }
+            .onChange(of: fieldFocused) { focused in
+                if !focused { commitEdit() }
+            }
+
+            HStack(spacing: 2) {
+                Button {
+                    commitEdit()
+                    let id = model.addFilter()
+                    selection = [id]
+                    beginEdit(id)
+                } label: {
+                    Image(systemName: "plus").frame(width: 22, height: 18)
+                }
+                .help("Add a pattern")
+                Button {
+                    removeSelected()
+                } label: {
+                    Image(systemName: "minus").frame(width: 22, height: 18)
+                }
+                .disabled(selection.isEmpty)
+                .help("Remove the selected patterns")
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private func beginEdit(_ id: TextFilter.ID) {
+        guard let filter = model.filters.first(where: { $0.id == id }) else { return }
+        draft = filter.pattern
+        editingID = id
+        DispatchQueue.main.async { fieldFocused = true }
+    }
+
+    private func commitEdit() {
+        guard let id = editingID else { return }
+        editingID = nil
+        guard let index = model.filters.firstIndex(where: { $0.id == id }) else { return }
+        if draft.isEmpty {
+            model.removeFilters([id])
+        } else if model.filters[index].pattern != draft {
+            model.filters[index].pattern = draft
+        }
+    }
+
+    private func cancelEdit() {
+        guard let id = editingID else { return }
+        editingID = nil
+        if model.filters.first(where: { $0.id == id })?.pattern.isEmpty == true {
+            model.removeFilters([id])
+        }
+    }
+
+    private func removeSelected() {
+        if let editingID, selection.contains(editingID) { self.editingID = nil }
+        model.removeFilters(selection)
+        selection = []
+    }
+}
+
+/// Click, then press a key combination to set the global hotkey.
+private struct ShortcutRecorder: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var isRecording = false
+    @State private var monitor: Any?
+
+    private static let escapeKeyCode: UInt16 = 53
+
+    var body: some View {
+        Button {
+            isRecording ? stopRecording() : startRecording()
+        } label: {
+            Text(isRecording ? "Type shortcut…" : model.hotKeyCombo.displayString)
+                .frame(minWidth: 100)
+        }
+        .help("Click, then press a key combination that includes ⌘, ⌃ or ⌥. Esc cancels.")
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        // Let the current combo reach us instead of firing the hotkey.
+        GlobalHotKey.shared.unregister()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == Self.escapeKeyCode {
+                stopRecording()
+            } else if let combo = KeyCombo(event: event) {
+                stopRecording()
+                model.hotKeyCombo = combo
+            } else {
+                NSSound.beep()
+            }
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        guard isRecording else { return }
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        isRecording = false
+        model.updateHotKey(promptForAccess: false)
     }
 }

@@ -10,6 +10,14 @@ enum OutputMode: String, CaseIterable, Identifiable {
     var title: String { self == .play ? "Play" : "Save" }
 }
 
+enum HotKeyMode: String, CaseIterable, Identifiable {
+    case replace
+    case append
+
+    var id: String { rawValue }
+    var title: String { self == .replace ? "Replace" : "Append" }
+}
+
 enum ConnectionState {
     case unknown, connecting, connected, failed
 }
@@ -25,6 +33,12 @@ final class AppModel: ObservableObject {
         static let outputMode = "outputMode"
         static let saveFolder = "saveFolder"
         static let volume = "volume"
+        static let filters = "textFilters"
+        static let showFiltered = "showFilteredText"
+        static let hotKeyEnabled = "hotKeyEnabled"
+        static let hotKeyCombo = "hotKeyCombo"
+        static let hotKeyMode = "hotKeyMode"
+        static let hotKeySpeaks = "hotKeySpeaks"
     }
 
     static let defaultServerURL = "http://192.168.1.3:18778"
@@ -68,6 +82,49 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: Text filters
+
+    @Published var filters: [TextFilter] {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(filters), forKey: Key.filters)
+            refilterIfShowing()
+        }
+    }
+    /// Shows the filtered text in the editor. Turning it off restores the
+    /// original, unless the filtered text was edited in the meantime.
+    @Published var showFiltered: Bool {
+        didSet {
+            defaults.set(showFiltered, forKey: Key.showFiltered)
+            guard showFiltered != oldValue else { return }
+            if showFiltered { showFilteredText() } else { restoreUnfilteredText() }
+        }
+    }
+    private var unfilteredText: String?
+    private var lastFilteredText: String?
+
+    // MARK: Global hot key
+
+    @Published var hotKeyEnabled: Bool {
+        didSet {
+            defaults.set(hotKeyEnabled, forKey: Key.hotKeyEnabled)
+            updateHotKey(promptForAccess: hotKeyEnabled && !oldValue)
+        }
+    }
+    @Published var hotKeyCombo: KeyCombo {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(hotKeyCombo), forKey: Key.hotKeyCombo)
+            updateHotKey(promptForAccess: false)
+        }
+    }
+    @Published var hotKeyMode: HotKeyMode {
+        didSet { defaults.set(hotKeyMode.rawValue, forKey: Key.hotKeyMode) }
+    }
+    @Published var hotKeySpeaks: Bool {
+        didSet { defaults.set(hotKeySpeaks, forKey: Key.hotKeySpeaks) }
+    }
+    @Published private(set) var accessibilityTrusted = false
+    @Published private(set) var hotKeyConflict = false
+
     // MARK: Server data
 
     @Published private(set) var models: [OpenVoxItem] = []
@@ -104,8 +161,19 @@ final class AppModel: ObservableObject {
         outputMode = OutputMode(rawValue: defaults.string(forKey: Key.outputMode) ?? "") ?? .play
         saveFolder = defaults.string(forKey: Key.saveFolder) ?? Self.defaultSaveFolder()
         volume = defaults.object(forKey: Key.volume) as? Double ?? 0.8
+        filters = (defaults.data(forKey: Key.filters)).flatMap { try? JSONDecoder().decode([TextFilter].self, from: $0) } ?? []
+        showFiltered = defaults.object(forKey: Key.showFiltered) as? Bool ?? false
+        hotKeyEnabled = defaults.bool(forKey: Key.hotKeyEnabled)
+        hotKeyCombo = (defaults.data(forKey: Key.hotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultCombo
+        hotKeyMode = HotKeyMode(rawValue: defaults.string(forKey: Key.hotKeyMode) ?? "") ?? .replace
+        hotKeySpeaks = defaults.bool(forKey: Key.hotKeySpeaks)
         filePlayer.volume = Float(volume)
         streamPlayer.volume = Float(volume)
+
+        GlobalHotKey.shared.onPress = { [weak self] in
+            Task { @MainActor in await self?.handleHotKey() }
+        }
+        updateHotKey(promptForAccess: false)
     }
 
     private static func defaultSaveFolder() -> String {
@@ -208,14 +276,108 @@ final class AppModel: ObservableObject {
 
     func pasteFromClipboard() {
         if let string = NSPasteboard.general.string(forType: .string) {
-            text = string
+            setText(string)
         }
     }
 
+    /// Replaces the text, filtering it first when "Show filtered text" is on.
+    func setText(_ newText: String) {
+        if showFiltered {
+            unfilteredText = newText
+            let filtered = TextFilter.apply(filters, to: newText)
+            lastFilteredText = filtered
+            text = filtered
+        } else {
+            text = newText
+        }
+    }
+
+    /// The text before filtering, as long as the filtered view hasn't been edited.
+    private var sourceText: String {
+        if showFiltered, text == lastFilteredText, let unfilteredText { return unfilteredText }
+        return text
+    }
+
+    // MARK: Filtering
+
+    func addFilter() -> TextFilter.ID {
+        let filter = TextFilter(pattern: "")
+        filters.append(filter)
+        return filter.id
+    }
+
+    func removeFilters(_ ids: Set<TextFilter.ID>) {
+        filters.removeAll { ids.contains($0.id) }
+    }
+
+    private func showFilteredText() {
+        unfilteredText = text
+        let filtered = TextFilter.apply(filters, to: text)
+        lastFilteredText = filtered
+        text = filtered
+    }
+
+    private func restoreUnfilteredText() {
+        if let unfilteredText, text == lastFilteredText {
+            text = unfilteredText
+        }
+        unfilteredText = nil
+        lastFilteredText = nil
+    }
+
+    private func refilterIfShowing() {
+        guard showFiltered else { return }
+        setText(sourceText)
+    }
+
+    // MARK: Hot key
+
+    func updateHotKey(promptForAccess: Bool) {
+        if hotKeyEnabled {
+            hotKeyConflict = !GlobalHotKey.shared.register(hotKeyCombo)
+            if promptForAccess && !SelectionGrabber.isTrusted {
+                SelectionGrabber.requestAccess()
+            }
+        } else {
+            GlobalHotKey.shared.unregister()
+            hotKeyConflict = false
+        }
+        refreshAccessibilityStatus()
+    }
+
+    func refreshAccessibilityStatus() {
+        accessibilityTrusted = SelectionGrabber.isTrusted
+    }
+
+    func handleHotKey() async {
+        refreshAccessibilityStatus()
+        guard accessibilityTrusted else {
+            SelectionGrabber.requestAccess()
+            setError("TTS Buddy needs Accessibility access to read selected text. Turn it on in System Settings › Privacy & Security › Accessibility.")
+            return
+        }
+        guard let selection = await SelectionGrabber.selectedText(),
+              !selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            NSSound.beep()
+            setError("No selected text found in the front app.")
+            return
+        }
+        switch hotKeyMode {
+        case .replace:
+            setText(selection)
+        case .append:
+            let current = sourceText
+            let separator = current.isEmpty || current.hasSuffix("\n") ? "" : "\n\n"
+            setText(current + separator + selection)
+        }
+        setStatus("Grabbed \(selection.count) characters from the selection.")
+        if hotKeySpeaks { speak() }
+    }
+
     func speak() {
-        let input = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let input = TextFilter.apply(filters, to: text).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else {
-            setError("Paste some text first.")
+            setError(text.isEmpty ? "Paste some text first." : "Nothing left to speak after filtering.")
             return
         }
         guard !selectedModel.isEmpty else {

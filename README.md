@@ -12,6 +12,14 @@ using the [OpenVox local API](https://openvoxai.com/support#local-api).
   - **Play**: play/pause, position slider and volume slider.
   - **Save**: writes a `.wav` to a folder you choose (default `~/Music/OpenVox TTS`).
 - **Save last clip…** saves whatever you heard last, streamed or not.
+- **Text filters**: a list of regular expressions whose matches are stripped
+  before speaking. **+** adds one, select and **−** (or Delete) removes, double-click
+  edits, and each has an on/off checkbox. **Show filtered text** swaps the editor
+  to the filtered version; turning it off brings the original back, unless you
+  edited the filtered text in the meantime, in which case your edits stay.
+- **Global hotkey** (default **⌃⌥T**, click the shortcut to record a new one):
+  grabs whatever is selected in the front app and either **replaces** or
+  **appends** to the text, optionally speaking it right away.
 
 Built for macOS 26 (Tahoe) on Apple Silicon. It also runs on macOS 13 Ventura
 and later, and the universal build runs on Intel Macs.
@@ -45,6 +53,20 @@ To hack on it, `open Package.swift` in Xcode and run the `OpenVoxTTSBuddy` schem
 
 On first connect macOS asks for **Local Network** access. Allow it. If you
 denied it, turn it back on in System Settings › Privacy & Security › Local Network.
+
+### Accessibility permission for the hotkey
+
+Reading another app's selection needs **Accessibility** access. When you first
+turn on the hotkey, macOS shows a prompt that takes you to System Settings ›
+Privacy & Security › Accessibility; switch **OpenVox TTS Buddy** on there.
+
+The app is ad-hoc signed, so macOS ties that permission to this exact build.
+After installing a new build, remove the old entry with **−** in that list and
+switch the new one on, or the hotkey silently won't grab anything.
+
+The hotkey first asks the focused app for its selection through the
+Accessibility API; apps that don't expose it (some browsers and Electron apps)
+get a simulated ⌘C instead, and your clipboard is put back afterwards.
 
 ## Making the Windows OpenVox server reachable from your Mac
 
