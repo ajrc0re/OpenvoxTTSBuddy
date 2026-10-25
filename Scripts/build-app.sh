@@ -18,6 +18,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/OpenVoxTTSBuddy" "$APP/Contents/MacOS/OpenVoxTTSBuddy"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc signature so macOS will launch it and remember the Local Network permission.
 codesign --force --deep --sign - "$APP"

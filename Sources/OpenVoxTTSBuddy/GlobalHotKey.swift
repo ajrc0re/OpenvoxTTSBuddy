@@ -13,6 +13,11 @@ struct KeyCombo: Codable, Equatable {
                                        carbonModifiers: UInt32(controlKey | optionKey),
                                        keyLabel: "T")
 
+    /// ⌃⌥V
+    static let defaultClipboardCombo = KeyCombo(keyCode: UInt32(kVK_ANSI_V),
+                                                carbonModifiers: UInt32(controlKey | optionKey),
+                                                keyLabel: "V")
+
     init(keyCode: UInt32, carbonModifiers: UInt32, keyLabel: String) {
         self.keyCode = keyCode
         self.carbonModifiers = carbonModifiers
@@ -67,14 +72,20 @@ struct KeyCombo: Codable, Equatable {
     ]
 }
 
-/// Registers one system-wide hot key with Carbon's RegisterEventHotKey.
+/// What a global hot key does.
+enum HotKeyAction: UInt32, CaseIterable {
+    case pasteSelection = 1
+    case pasteClipboard = 2
+}
+
+/// Registers system-wide hot keys with Carbon's RegisterEventHotKey.
 /// Registering doesn't need any permission; reading another app's selection does.
 final class GlobalHotKey {
     static let shared = GlobalHotKey()
 
-    var onPress: (() -> Void)?
+    var onPress: ((HotKeyAction) -> Void)?
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefs: [HotKeyAction: EventHotKeyRef] = [:]
     private var handlerRef: EventHandlerRef?
     private let signature: OSType = 0x4F56_5442 // "OVTB"
 
@@ -82,28 +93,35 @@ final class GlobalHotKey {
 
     /// Returns false if the combo is already taken by another app.
     @discardableResult
-    func register(_ combo: KeyCombo) -> Bool {
-        unregister()
+    func register(_ combo: KeyCombo, for action: HotKeyAction) -> Bool {
+        unregister(action)
         installHandlerIfNeeded()
         var ref: EventHotKeyRef?
-        let id = EventHotKeyID(signature: signature, id: 1)
+        let id = EventHotKeyID(signature: signature, id: action.rawValue)
         let status = RegisterEventHotKey(combo.keyCode, combo.carbonModifiers, id,
                                          GetApplicationEventTarget(), 0, &ref)
         guard status == noErr, let ref else { return false }
-        hotKeyRef = ref
+        hotKeyRefs[action] = ref
         return true
     }
 
-    func unregister() {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
-        hotKeyRef = nil
+    func unregister(_ action: HotKeyAction) {
+        if let ref = hotKeyRefs.removeValue(forKey: action) { UnregisterEventHotKey(ref) }
+    }
+
+    func unregisterAll() {
+        HotKeyAction.allCases.forEach(unregister)
     }
 
     private func installHandlerIfNeeded() {
         guard handlerRef == nil else { return }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            DispatchQueue.main.async { GlobalHotKey.shared.onPress?() }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var id = EventHotKeyID()
+            let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                           nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+            guard status == noErr, let action = HotKeyAction(rawValue: id.id) else { return OSStatus(eventNotHandledErr) }
+            DispatchQueue.main.async { GlobalHotKey.shared.onPress?(action) }
             return noErr
         }, 1, &eventType, nil, &handlerRef)
     }
