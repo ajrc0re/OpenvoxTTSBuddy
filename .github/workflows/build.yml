@@ -20,6 +20,9 @@ jobs:
 
       - name: Build app (universal)
         run: UNIVERSAL=1 Scripts/build-app.sh
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_COMMIT: ${{ github.sha }}
 
       - name: Hotkey self-test
         run: '"build/OpenVox TTS Buddy.app/Contents/MacOS/OpenVoxTTSBuddy" --selftest-hotkeys'
