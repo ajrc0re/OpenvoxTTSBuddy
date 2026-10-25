@@ -100,9 +100,16 @@ final class GlobalHotKey {
         let id = EventHotKeyID(signature: signature, id: action.rawValue)
         let status = RegisterEventHotKey(combo.keyCode, combo.carbonModifiers, id,
                                          GetApplicationEventTarget(), 0, &ref)
-        guard status == noErr, let ref else { return false }
+        guard status == noErr, let ref else {
+            NSLog("OpenVox TTS Buddy: RegisterEventHotKey(%@) failed with %d", combo.displayString, status)
+            return false
+        }
         hotKeyRefs[action] = ref
         return true
+    }
+
+    func isRegistered(_ action: HotKeyAction) -> Bool {
+        hotKeyRefs[action] != nil
     }
 
     func unregister(_ action: HotKeyAction) {
@@ -124,6 +131,51 @@ final class GlobalHotKey {
             DispatchQueue.main.async { GlobalHotKey.shared.onPress?(action) }
             return noErr
         }, 1, &eventType, nil, &handlerRef)
+    }
+
+    /// Delivers a hot key event through the same Carbon handler a real key press uses.
+    private func simulatePress(_ action: HotKeyAction) -> OSStatus {
+        var event: EventRef?
+        var status = CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kEventHotKeyPressed), 0,
+                                 EventAttributes(kEventAttributeNone), &event)
+        guard status == noErr, let event else { return status }
+        defer { ReleaseEvent(event) }
+        var id = EventHotKeyID(signature: signature, id: action.rawValue)
+        status = SetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                   MemoryLayout<EventHotKeyID>.size, &id)
+        guard status == noErr else { return status }
+        return SendEventToEventTarget(event, GetApplicationEventTarget())
+    }
+
+    /// `OpenVoxTTSBuddy --selftest-hotkeys`: registers every hot key, fires each
+    /// one through the Carbon handler and checks the right action arrives. Used by CI.
+    static func runSelfTest() -> Int32 {
+        _ = NSApplication.shared
+        let hotKeys = GlobalHotKey.shared
+        var fired: [HotKeyAction] = []
+        hotKeys.onPress = { fired.append($0) }
+
+        // Unusual combos so the test doesn't collide with anything on the runner.
+        let combos: [HotKeyAction: KeyCombo] = [
+            .pasteSelection: KeyCombo(keyCode: UInt32(kVK_F17), carbonModifiers: UInt32(controlKey | optionKey | shiftKey), keyLabel: "F17"),
+            .pasteClipboard: KeyCombo(keyCode: UInt32(kVK_F18), carbonModifiers: UInt32(controlKey | optionKey | shiftKey), keyLabel: "F18"),
+        ]
+        var ok = true
+        for action in HotKeyAction.allCases {
+            let registered = hotKeys.register(combos[action]!, for: action)
+            print("register \(action): \(registered ? "ok" : "FAILED")")
+            ok = ok && registered
+        }
+        for action in HotKeyAction.allCases {
+            let status = hotKeys.simulatePress(action)
+            print("send \(action): status \(status)")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        print("fired: \(fired)")
+        ok = ok && fired == HotKeyAction.allCases
+        hotKeys.unregisterAll()
+        print(ok ? "HOTKEY SELFTEST PASSED" : "HOTKEY SELFTEST FAILED")
+        return ok ? 0 : 1
     }
 }
 

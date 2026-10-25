@@ -6,6 +6,12 @@ struct OpenVoxTTSBuddyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
+    init() {
+        if CommandLine.arguments.contains("--selftest-hotkeys") {
+            exit(GlobalHotKey.runSelfTest())
+        }
+    }
+
     var body: some Scene {
         Window("OpenVox TTS Buddy", id: "main") {
             ContentView()
@@ -41,6 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // Keep running in the background while a global hotkey is on, or closing
+        // the window would silently turn the hotkeys off.
+        let defaults = UserDefaults.standard
+        return !(defaults.bool(forKey: "hotKeyEnabled") || defaults.bool(forKey: "clipboardHotKeyEnabled"))
     }
 }
