@@ -491,6 +491,14 @@ private struct ShortcutRecorder: View {
         }
         .help("Click, then press a key combination that includes ⌘, ⌃ or ⌥. Esc cancels.")
         .onDisappear { stopRecording() }
+        // Hotkeys are switched off while recording, so never leave recording
+        // running when the user goes to another app to try the shortcut.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            stopRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            stopRecording()
+        }
     }
 
     private func startRecording() {
