@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Build app (universal)
+        run: UNIVERSAL=1 Scripts/build-app.sh
+
+      - name: Zip app
+        run: |
+          cd build
+          ditto -c -k --keepParent "OpenVox TTS Buddy.app" OpenVoxTTSBuddy.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenVoxTTSBuddy
+          path: build/OpenVoxTTSBuddy.zip
