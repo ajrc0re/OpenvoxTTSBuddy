@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Installs or updates "OpenVox TTS Buddy.app" from the newest successful
+# GitHub Actions build of main. Needs the GitHub CLI, signed in:
+#   brew install gh && gh auth login
+#
+#   update-openvox-buddy           update if a newer build exists
+#   update-openvox-buddy --force   reinstall the newest build anyway
+#   update-openvox-buddy --check   only say whether an update exists
+set -euo pipefail
+
+REPO="ajrc0re/OpenvoxTTSBuddy"
+WORKFLOW="build.yml"
+BRANCH="main"
+ARTIFACT="OpenVoxTTSBuddy"
+APP_NAME="OpenVox TTS Buddy.app"
+BUNDLE_ID="com.ajrc0re.OpenVoxTTSBuddy"
+DEST="/Applications/$APP_NAME"
+
+FORCE=0
+CHECK_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    -f|--force) FORCE=1 ;;
+    -c|--check) CHECK_ONLY=1 ;;
+    -h|--help) sed -n '2,8s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '==> %s\n' "$*"; }
+die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+
+command -v gh >/dev/null || die "GitHub CLI not found. Install it with: brew install gh"
+gh auth status >/dev/null 2>&1 || die "GitHub CLI isn't signed in. Run: gh auth login"
+
+say "Looking for the newest successful build of $BRANCH"
+read -r RUN_ID RUN_NUMBER RUN_SHA < <(
+  gh run list -R "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" --event push \
+    --status success --limit 1 --json databaseId,number,headSha \
+    --jq '.[0] | "\(.databaseId) \(.number) \(.headSha)"'
+) || true
+[[ -n "${RUN_ID:-}" && "$RUN_ID" != "null" ]] || die "No successful $BRANCH build found."
+say "Newest build: #$RUN_NUMBER (${RUN_SHA:0:7})"
+
+INSTALLED=""
+if [[ -d "$DEST" ]]; then
+  INSTALLED="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DEST/Contents/Info.plist" 2>/dev/null || true)"
+  say "Installed build: #${INSTALLED:-unknown}"
+else
+  say "Not installed yet"
+fi
+
+if [[ "$INSTALLED" == "$RUN_NUMBER" && $FORCE -eq 0 ]]; then
+  say "Already up to date. Use --force to reinstall."
+  exit 0
+fi
+if [[ $CHECK_ONLY -eq 1 ]]; then
+  say "Update available: #${INSTALLED:-none} -> #$RUN_NUMBER"
+  exit 0
+fi
+
+WORK="$(mktemp -d -t openvox-buddy-update)"
+BACKUP=""
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+say "Downloading build #$RUN_NUMBER"
+gh run download "$RUN_ID" -R "$REPO" -n "$ARTIFACT" -D "$WORK/download" \
+  || die "Download failed. GitHub keeps build artifacts for 90 days; push to main for a fresh one."
+
+ZIP="$WORK/download/OpenVoxTTSBuddy.zip"
+[[ -f "$ZIP" ]] || die "The artifact didn't contain OpenVoxTTSBuddy.zip."
+ditto -x -k "$ZIP" "$WORK/unzipped"
+NEW_APP="$WORK/unzipped/$APP_NAME"
+[[ -d "$NEW_APP" ]] || die "The zip didn't contain $APP_NAME."
+
+NEW_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$NEW_APP/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$NEW_ID" == "$BUNDLE_ID" ]] || die "Unexpected bundle ID '$NEW_ID', expected $BUNDLE_ID. Not installing."
+xattr -dr com.apple.quarantine "$NEW_APP" 2>/dev/null || true
+
+# Writing to /Applications normally works for admin users; fall back to sudo.
+NEED_SUDO=0
+if [[ ! -w /Applications || ( -e "$DEST" && ! -w "$DEST" ) ]]; then
+  say "Need administrator rights to write to /Applications"
+  NEED_SUDO=1
+fi
+admin() { if [[ $NEED_SUDO -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
+
+if pgrep -f "$APP_NAME/Contents/MacOS/" >/dev/null; then
+  say "Quitting OpenVox TTS Buddy"
+  osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  for _ in {1..10}; do
+    pgrep -f "$APP_NAME/Contents/MacOS/" >/dev/null || break
+    sleep 0.5
+  done
+  pkill -f "$APP_NAME/Contents/MacOS/" 2>/dev/null || true
+fi
+
+if [[ -d "$DEST" ]]; then
+  BACKUP="$WORK/backup.app"
+  admin mv "$DEST" "$BACKUP"
+fi
+
+say "Installing to $DEST"
+if ! admin ditto "$NEW_APP" "$DEST"; then
+  if [[ -n "$BACKUP" ]]; then
+    say "Install failed, putting the previous version back"
+    admin rm -rf "$DEST"
+    admin mv "$BACKUP" "$DEST"
+  fi
+  die "Couldn't copy the app to /Applications."
+fi
+admin xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+[[ -n "$BACKUP" ]] && admin rm -rf "$BACKUP"
+
+# Each build has its own ad-hoc signature, so the old Accessibility grant no
+# longer matches. Clear it so the hotkey asks again instead of failing silently.
+if tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1; then
+  say "Cleared the old Accessibility permission"
+fi
+
+say "Launching build #$RUN_NUMBER"
+open "$DEST"
+
+cat <<'EOF'
+
+If you use the selection hotkey, switch OpenVox TTS Buddy back on in
+System Settings > Privacy & Security > Accessibility. Opening it now.
+(If an old entry is still listed, remove it with - first.)
+EOF
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true

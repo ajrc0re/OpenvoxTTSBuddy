@@ -41,6 +41,51 @@ time, clear the quarantine flag:
 xattr -dr com.apple.quarantine "/Applications/OpenVox TTS Buddy.app"
 ```
 
+### Install and update with one command
+
+[`Scripts/update-openvox-buddy`](Scripts/update-openvox-buddy) does all of the
+above for you. It finds the newest successful build of `main`, downloads it,
+checks the bundle ID, quits the running app, swaps the copy in Applications
+(putting the old one back if anything fails), clears quarantine, and relaunches.
+It also clears the stale Accessibility entry and opens that settings page, so
+re-enabling the hotkey is one switch.
+
+One-time setup:
+
+```sh
+# 1. GitHub CLI, signed in (Actions artifacts can only be downloaded when signed in)
+brew install gh
+gh auth login
+gh auth status
+
+# 2. Put the script in ~/bin and make it executable
+mkdir -p ~/bin
+curl -fsSL https://raw.githubusercontent.com/ajrc0re/OpenvoxTTSBuddy/main/Scripts/update-openvox-buddy \
+  -o ~/bin/update-openvox-buddy
+chmod +x ~/bin/update-openvox-buddy
+
+# 3. Add ~/bin to your PATH (skip if it's already there)
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+which update-openvox-buddy
+```
+
+Then, whenever you want the latest build:
+
+```sh
+update-openvox-buddy            # installs only if there's a newer build
+update-openvox-buddy --check    # just tell me
+update-openvox-buddy --force    # reinstall the newest build anyway
+```
+
+The script compares the installed app's build number with the newest Build
+run on `main`, so it skips the download when you're current. Builds made
+before the script existed all report build 1, so the first run always
+installs. GitHub deletes artifacts after 90 days; if the newest build is older
+than that, the download fails until something new is pushed to `main`. If your
+user can't write to `/Applications`, the script asks for your password and uses
+`sudo` for the copy.
+
 ### Build it yourself
 
 Needs Xcode 15 or later (Xcode 26 gives you the Tahoe look) or the matching
@@ -68,7 +113,8 @@ Privacy & Security › Accessibility; switch **OpenVox TTS Buddy** on there.
 
 The app is ad-hoc signed, so macOS ties that permission to this exact build.
 After installing a new build, remove the old entry with **−** in that list and
-switch the new one on, or the hotkey silently won't grab anything.
+switch the new one on, or the hotkey silently won't grab anything. The update
+script clears the old entry and opens this page for you.
 
 The hotkey first asks the focused app for its selection through the
 Accessibility API; apps that don't expose it (some browsers and Electron apps)
