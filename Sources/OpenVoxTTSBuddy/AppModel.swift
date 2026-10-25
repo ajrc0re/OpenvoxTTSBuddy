@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
         static let hotKeyCombo = "hotKeyCombo"
         static let hotKeyMode = "hotKeyMode"
         static let hotKeySpeaks = "hotKeySpeaks"
+        static let clipboardHotKeyEnabled = "clipboardHotKeyEnabled"
+        static let clipboardHotKeyCombo = "clipboardHotKeyCombo"
     }
 
     static let defaultServerURL = "http://192.168.1.3:18778"
@@ -107,13 +109,26 @@ final class AppModel: ObservableObject {
     @Published var hotKeyEnabled: Bool {
         didSet {
             defaults.set(hotKeyEnabled, forKey: Key.hotKeyEnabled)
-            updateHotKey(promptForAccess: hotKeyEnabled && !oldValue)
+            updateHotKeys(promptForAccess: hotKeyEnabled && !oldValue)
         }
     }
     @Published var hotKeyCombo: KeyCombo {
         didSet {
             defaults.set(try? JSONEncoder().encode(hotKeyCombo), forKey: Key.hotKeyCombo)
-            updateHotKey(promptForAccess: false)
+            updateHotKeys(promptForAccess: false)
+        }
+    }
+    /// A second hotkey that pastes the clipboard; needs no Accessibility access.
+    @Published var clipboardHotKeyEnabled: Bool {
+        didSet {
+            defaults.set(clipboardHotKeyEnabled, forKey: Key.clipboardHotKeyEnabled)
+            updateHotKeys(promptForAccess: false)
+        }
+    }
+    @Published var clipboardHotKeyCombo: KeyCombo {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(clipboardHotKeyCombo), forKey: Key.clipboardHotKeyCombo)
+            updateHotKeys(promptForAccess: false)
         }
     }
     @Published var hotKeyMode: HotKeyMode {
@@ -124,6 +139,7 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var accessibilityTrusted = false
     @Published private(set) var hotKeyConflict = false
+    @Published private(set) var clipboardHotKeyConflict = false
 
     // MARK: Server data
 
@@ -167,13 +183,15 @@ final class AppModel: ObservableObject {
         hotKeyCombo = (defaults.data(forKey: Key.hotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultCombo
         hotKeyMode = HotKeyMode(rawValue: defaults.string(forKey: Key.hotKeyMode) ?? "") ?? .replace
         hotKeySpeaks = defaults.bool(forKey: Key.hotKeySpeaks)
+        clipboardHotKeyEnabled = defaults.bool(forKey: Key.clipboardHotKeyEnabled)
+        clipboardHotKeyCombo = (defaults.data(forKey: Key.clipboardHotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultClipboardCombo
         filePlayer.volume = Float(volume)
         streamPlayer.volume = Float(volume)
 
-        GlobalHotKey.shared.onPress = { [weak self] in
-            Task { @MainActor in await self?.handleHotKey() }
+        GlobalHotKey.shared.onPress = { [weak self] action in
+            Task { @MainActor in await self?.handleHotKey(action) }
         }
-        updateHotKey(promptForAccess: false)
+        updateHotKeys(promptForAccess: false)
     }
 
     private static func defaultSaveFolder() -> String {
@@ -332,15 +350,21 @@ final class AppModel: ObservableObject {
 
     // MARK: Hot key
 
-    func updateHotKey(promptForAccess: Bool) {
+    func updateHotKeys(promptForAccess: Bool) {
         if hotKeyEnabled {
-            hotKeyConflict = !GlobalHotKey.shared.register(hotKeyCombo)
+            hotKeyConflict = !GlobalHotKey.shared.register(hotKeyCombo, for: .pasteSelection)
             if promptForAccess && !SelectionGrabber.isTrusted {
                 SelectionGrabber.requestAccess()
             }
         } else {
-            GlobalHotKey.shared.unregister()
+            GlobalHotKey.shared.unregister(.pasteSelection)
             hotKeyConflict = false
+        }
+        if clipboardHotKeyEnabled {
+            clipboardHotKeyConflict = !GlobalHotKey.shared.register(clipboardHotKeyCombo, for: .pasteClipboard)
+        } else {
+            GlobalHotKey.shared.unregister(.pasteClipboard)
+            clipboardHotKeyConflict = false
         }
         refreshAccessibilityStatus()
     }
@@ -349,7 +373,38 @@ final class AppModel: ObservableObject {
         accessibilityTrusted = SelectionGrabber.isTrusted
     }
 
-    func handleHotKey() async {
+    func handleHotKey(_ action: HotKeyAction) async {
+        switch action {
+        case .pasteSelection: await pasteSelection()
+        case .pasteClipboard: pasteClipboardFromHotKey()
+        }
+    }
+
+    private func pasteClipboardFromHotKey() {
+        guard let clip = NSPasteboard.general.string(forType: .string),
+              !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            NSSound.beep()
+            setError("The clipboard has no text.")
+            return
+        }
+        insertFromHotKey(clip)
+        setStatus("Pasted \(clip.count) characters from the clipboard.")
+        if hotKeySpeaks { speak() }
+    }
+
+    /// Replaces or appends, per the hotkey mode.
+    private func insertFromHotKey(_ newText: String) {
+        switch hotKeyMode {
+        case .replace:
+            setText(newText)
+        case .append:
+            let current = sourceText
+            let separator = current.isEmpty || current.hasSuffix("\n") ? "" : "\n\n"
+            setText(current + separator + newText)
+        }
+    }
+
+    private func pasteSelection() async {
         refreshAccessibilityStatus()
         guard accessibilityTrusted else {
             SelectionGrabber.requestAccess()
@@ -362,14 +417,7 @@ final class AppModel: ObservableObject {
             setError("No selected text found in the front app.")
             return
         }
-        switch hotKeyMode {
-        case .replace:
-            setText(selection)
-        case .append:
-            let current = sourceText
-            let separator = current.isEmpty || current.hasSuffix("\n") ? "" : "\n\n"
-            setText(current + separator + selection)
-        }
+        insertFromHotKey(selection)
         setStatus("Grabbed \(selection.count) characters from the selection.")
         if hotKeySpeaks { speak() }
     }

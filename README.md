@@ -20,6 +20,9 @@ using the [OpenVox local API](https://openvoxai.com/support#local-api).
 - **Global hotkey** (default **⌃⌥T**, click the shortcut to record a new one):
   grabs whatever is selected in the front app and either **replaces** or
   **appends** to the text, optionally speaking it right away.
+- **Clipboard hotkey** (default **⌃⌥V**): same idea, but pastes whatever is on
+  the clipboard. It uses the same Replace/Append and "Speak right away"
+  settings and doesn't need Accessibility access.
 
 Built for macOS 26 (Tahoe) on Apple Silicon. It also runs on macOS 13 Ventura
 and later, and the universal build runs on Intel Macs.
@@ -48,6 +51,9 @@ Scripts/build-app.sh                # Apple Silicon
 UNIVERSAL=1 Scripts/build-app.sh    # Apple Silicon + Intel
 open "build/OpenVox TTS Buddy.app"
 ```
+
+The app icon lives in `Resources/AppIcon.icns`; `python3 Scripts/make-icon.py`
+(needs Pillow) redraws it along with `Resources/AppIcon.png`.
 
 To hack on it, `open Package.swift` in Xcode and run the `OpenVoxTTSBuddy` scheme.
 

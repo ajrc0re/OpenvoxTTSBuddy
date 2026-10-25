@@ -186,17 +186,22 @@ private struct SettingsPane: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Global hotkey") {
+            Section("Global hotkeys") {
                 Toggle("Paste selection into TTS Buddy", isOn: $model.hotKeyEnabled)
                 LabeledContent("Shortcut") {
-                    ShortcutRecorder()
+                    ShortcutRecorder(combo: $model.hotKeyCombo)
                 }
                 if model.hotKeyConflict {
-                    Label("Another app already uses that shortcut. Pick a different one.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    ShortcutConflictLabel()
                 }
-                Picker("Selected text", selection: $model.hotKeyMode) {
+                Toggle("Paste clipboard into TTS Buddy", isOn: $model.clipboardHotKeyEnabled)
+                LabeledContent("Shortcut") {
+                    ShortcutRecorder(combo: $model.clipboardHotKeyCombo)
+                }
+                if model.clipboardHotKeyConflict {
+                    ShortcutConflictLabel()
+                }
+                Picker("Pasted text", selection: $model.hotKeyMode) {
                     ForEach(HotKeyMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -460,9 +465,18 @@ private struct FilterList: View {
     }
 }
 
-/// Click, then press a key combination to set the global hotkey.
+private struct ShortcutConflictLabel: View {
+    var body: some View {
+        Label("Another app already uses that shortcut. Pick a different one.", systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.orange)
+    }
+}
+
+/// Click, then press a key combination to set a global hotkey.
 private struct ShortcutRecorder: View {
     @EnvironmentObject private var model: AppModel
+    @Binding var combo: KeyCombo
     @State private var isRecording = false
     @State private var monitor: Any?
 
@@ -472,7 +486,7 @@ private struct ShortcutRecorder: View {
         Button {
             isRecording ? stopRecording() : startRecording()
         } label: {
-            Text(isRecording ? "Type shortcut…" : model.hotKeyCombo.displayString)
+            Text(isRecording ? "Type shortcut…" : combo.displayString)
                 .frame(minWidth: 100)
         }
         .help("Click, then press a key combination that includes ⌘, ⌃ or ⌥. Esc cancels.")
@@ -481,14 +495,14 @@ private struct ShortcutRecorder: View {
 
     private func startRecording() {
         isRecording = true
-        // Let the current combo reach us instead of firing the hotkey.
-        GlobalHotKey.shared.unregister()
+        // Let the current combos reach us instead of firing the hotkeys.
+        GlobalHotKey.shared.unregisterAll()
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == Self.escapeKeyCode {
                 stopRecording()
-            } else if let combo = KeyCombo(event: event) {
+            } else if let newCombo = KeyCombo(event: event) {
                 stopRecording()
-                model.hotKeyCombo = combo
+                combo = newCombo
             } else {
                 NSSound.beep()
             }
@@ -501,6 +515,6 @@ private struct ShortcutRecorder: View {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         isRecording = false
-        model.updateHotKey(promptForAccess: false)
+        model.updateHotKeys(promptForAccess: false)
     }
 }

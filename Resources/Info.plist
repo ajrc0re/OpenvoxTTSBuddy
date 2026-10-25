@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>OpenVoxTTSBuddy</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.ajrc0re.OpenVoxTTSBuddy</string>
 	<key>CFBundleInfoDictionaryVersion</key>
