@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
         static let hotKeyCombo = "hotKeyCombo"
         static let hotKeyMode = "hotKeyMode"
         static let hotKeySpeaks = "hotKeySpeaks"
+        static let showAllModels = "showAllModels"
         static let clipboardHotKeyEnabled = "clipboardHotKeyEnabled"
         static let clipboardHotKeyCombo = "clipboardHotKeyCombo"
     }
@@ -144,6 +145,19 @@ final class AppModel: ObservableObject {
     // MARK: Server data
 
     @Published private(set) var models: [OpenVoxItem] = []
+    /// Also list models the server says aren't downloaded or can't run.
+    @Published var showAllModels: Bool {
+        didSet { defaults.set(showAllModels, forKey: Key.showAllModels) }
+    }
+
+    var visibleModels: [OpenVoxItem] {
+        showAllModels ? models : models.filter(\.isAvailable)
+    }
+
+    /// The selected model, when the server reports it as unavailable.
+    var unavailableSelectedModel: OpenVoxItem? {
+        models.first { $0.id == selectedModel && !$0.isAvailable }
+    }
     @Published private(set) var languages: [OpenVoxItem] = []
     @Published private(set) var voices: [OpenVoxItem] = []
     @Published private(set) var connection: ConnectionState = .unknown
@@ -183,6 +197,7 @@ final class AppModel: ObservableObject {
         hotKeyCombo = (defaults.data(forKey: Key.hotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultCombo
         hotKeyMode = HotKeyMode(rawValue: defaults.string(forKey: Key.hotKeyMode) ?? "") ?? .replace
         hotKeySpeaks = defaults.bool(forKey: Key.hotKeySpeaks)
+        showAllModels = defaults.bool(forKey: Key.showAllModels)
         clipboardHotKeyEnabled = defaults.bool(forKey: Key.clipboardHotKeyEnabled)
         clipboardHotKeyCombo = (defaults.data(forKey: Key.clipboardHotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultClipboardCombo
         filePlayer.volume = Float(volume)
@@ -217,8 +232,10 @@ final class AppModel: ObservableObject {
             let list = try await client.listModels()
             models = list
             connection = .connected
-            setStatus("Connected. \(list.count) model\(list.count == 1 ? "" : "s") available.")
-            if let first = list.first, !list.contains(where: { $0.id == selectedModel }) {
+            let ready = list.filter(\.isAvailable)
+            setStatus("Connected. \(ready.count) of \(list.count) model\(list.count == 1 ? "" : "s") ready.")
+            let candidates = ready.isEmpty ? list : ready
+            if let first = candidates.first, !candidates.contains(where: { $0.id == selectedModel }) {
                 selectedModel = first.id // didSet loads languages
             } else {
                 reloadLanguages()

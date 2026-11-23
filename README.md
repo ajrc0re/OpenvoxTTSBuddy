@@ -7,6 +7,7 @@ using the [OpenVox local API](https://openvoxai.com/support#local-api).
 - Paste text (or press **⇧⌘V** to paste and speak in one go), then **Speak** (**⌘↩**). **⌘.** stops.
 - **Server URL**, defaulting to `http://192.168.1.3:18778`. The `/v1` suffix is added for you.
 - **Model**, **Language** and **Voice** pickers filled from the server, plus a **Preload model** button that warms the model before your first request.
+- Models the server reports as unavailable (not downloaded, or missing a runtime) are hidden; **Show unavailable models** lists them too, with the server's reason shown when one is selected.
 - **Stream audio?** on: playback starts as soon as the first chunk arrives.
 - **Stream audio?** off, with a **When finished** dropdown:
   - **Play**: play/pause, position slider and volume slider.

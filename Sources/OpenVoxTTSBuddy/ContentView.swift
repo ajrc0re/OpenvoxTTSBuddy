@@ -125,7 +125,17 @@ private struct SettingsPane: View {
             }
 
             Section("Voice") {
-                ItemPicker(title: "Model", items: model.models, selection: $model.selectedModel, placeholder: "kokoro")
+                ItemPicker(title: "Model", items: model.visibleModels, selection: $model.selectedModel, placeholder: "kokoro")
+                if model.models.contains(where: { !$0.isAvailable }) {
+                    Toggle("Show unavailable models", isOn: $model.showAllModels)
+                        .help("Also list models that aren't downloaded or can't run on the server")
+                }
+                if let unavailable = model.unavailableSelectedModel {
+                    Label(unavailable.detail ?? "The server says this model isn’t available.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 HStack {
                     Spacer()
                     if model.isPreloading {
@@ -273,7 +283,7 @@ private struct ItemPicker: View {
                     Text(selection.isEmpty ? "None" : selection).tag(selection)
                 }
                 ForEach(items) { item in
-                    Text(item.label).tag(item.id)
+                    Text(item.isAvailable ? item.label : "\(item.label) — unavailable").tag(item.id)
                 }
             }
         }
