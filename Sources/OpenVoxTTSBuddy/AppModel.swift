@@ -39,6 +39,9 @@ final class AppModel: ObservableObject {
         static let hotKeyCombo = "hotKeyCombo"
         static let hotKeyMode = "hotKeyMode"
         static let hotKeySpeaks = "hotKeySpeaks"
+        static let showAllModels = "showAllModels"
+        static let rouletteEnabled = "rouletteEnabled"
+        static let rouletteEntries = "rouletteEntries"
         static let clipboardHotKeyEnabled = "clipboardHotKeyEnabled"
         static let clipboardHotKeyCombo = "clipboardHotKeyCombo"
     }
@@ -141,9 +144,48 @@ final class AppModel: ObservableObject {
     @Published private(set) var hotKeyConflict = false
     @Published private(set) var clipboardHotKeyConflict = false
 
+    // MARK: Roulette
+
+    /// Each Speak uses a random entry from `rouletteEntries` instead of the pickers.
+    @Published var rouletteEnabled: Bool {
+        didSet {
+            defaults.set(rouletteEnabled, forKey: Key.rouletteEnabled)
+            guard rouletteEnabled != oldValue else { return }
+            if rouletteEnabled { queueNextRouletteEntry(preload: true) } else { upNextID = nil; upNextState = .idle }
+        }
+    }
+    @Published var rouletteEntries: [RouletteEntry] {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(rouletteEntries), forKey: Key.rouletteEntries)
+            if rouletteEnabled, !rouletteEntries.contains(where: { $0.id == upNextID }) {
+                queueNextRouletteEntry(preload: !isGenerating)
+            }
+        }
+    }
+    @Published private(set) var upNextID: RouletteEntry.ID?
+    @Published private(set) var upNextState: UpNextState = .idle
+    private var lastRouletteID: RouletteEntry.ID?
+    private var preloadTask: Task<Void, Never>?
+
+    var upNextEntry: RouletteEntry? { rouletteEntries.first { $0.id == upNextID } }
+    private var useRoulette: Bool { rouletteEnabled && !rouletteEntries.isEmpty }
+
     // MARK: Server data
 
     @Published private(set) var models: [OpenVoxItem] = []
+    /// Also list models the server says aren't downloaded or can't run.
+    @Published var showAllModels: Bool {
+        didSet { defaults.set(showAllModels, forKey: Key.showAllModels) }
+    }
+
+    var visibleModels: [OpenVoxItem] {
+        showAllModels ? models : models.filter(\.isAvailable)
+    }
+
+    /// The selected model, when the server reports it as unavailable.
+    var unavailableSelectedModel: OpenVoxItem? {
+        models.first { $0.id == selectedModel && !$0.isAvailable }
+    }
     @Published private(set) var languages: [OpenVoxItem] = []
     @Published private(set) var voices: [OpenVoxItem] = []
     @Published private(set) var connection: ConnectionState = .unknown
@@ -183,6 +225,9 @@ final class AppModel: ObservableObject {
         hotKeyCombo = (defaults.data(forKey: Key.hotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultCombo
         hotKeyMode = HotKeyMode(rawValue: defaults.string(forKey: Key.hotKeyMode) ?? "") ?? .replace
         hotKeySpeaks = defaults.bool(forKey: Key.hotKeySpeaks)
+        showAllModels = defaults.bool(forKey: Key.showAllModels)
+        rouletteEnabled = defaults.bool(forKey: Key.rouletteEnabled)
+        rouletteEntries = (defaults.data(forKey: Key.rouletteEntries)).flatMap { try? JSONDecoder().decode([RouletteEntry].self, from: $0) } ?? []
         clipboardHotKeyEnabled = defaults.bool(forKey: Key.clipboardHotKeyEnabled)
         clipboardHotKeyCombo = (defaults.data(forKey: Key.clipboardHotKeyCombo)).flatMap { try? JSONDecoder().decode(KeyCombo.self, from: $0) } ?? .defaultClipboardCombo
         filePlayer.volume = Float(volume)
@@ -217,8 +262,10 @@ final class AppModel: ObservableObject {
             let list = try await client.listModels()
             models = list
             connection = .connected
-            setStatus("Connected. \(list.count) model\(list.count == 1 ? "" : "s") available.")
-            if let first = list.first, !list.contains(where: { $0.id == selectedModel }) {
+            let ready = list.filter(\.isAvailable)
+            setStatus("Connected. \(ready.count) of \(list.count) model\(list.count == 1 ? "" : "s") ready.")
+            let candidates = ready.isEmpty ? list : ready
+            if let first = candidates.first, !candidates.contains(where: { $0.id == selectedModel }) {
                 selectedModel = first.id // didSet loads languages
             } else {
                 reloadLanguages()
@@ -429,13 +476,24 @@ final class AppModel: ObservableObject {
             setError(text.isEmpty ? "Paste some text first." : "Nothing left to speak after filtering.")
             return
         }
-        guard !selectedModel.isEmpty else {
+        guard useRoulette || !selectedModel.isEmpty else {
             setError("Pick a model first (connect to the server to load the list).")
             return
         }
         stop()
         lastSavedFile = nil
-        let model = selectedModel, language = selectedLanguage, voice = selectedVoice
+        var model = selectedModel, language = selectedLanguage, voice = selectedVoice
+        var rouletteEntry: RouletteEntry?
+        if useRoulette, let entry = upNextEntry ?? RouletteEntry.pick(from: rouletteEntries, avoiding: lastRouletteID) {
+            rouletteEntry = entry
+            lastRouletteID = entry.id
+            (model, language, voice) = (entry.model, entry.language, entry.voice)
+            // The up-next slot is used; the next one is picked when this generation finishes.
+            preloadTask?.cancel()
+            upNextID = nil
+            upNextState = .idle
+        }
+        currentRouletteEntry = rouletteEntry
         if streamAudio {
             speakTask = Task { await stream(input, model: model, language: language, voice: voice) }
         } else {
@@ -457,14 +515,14 @@ final class AppModel: ObservableObject {
     private func stream(_ input: String, model: String, language: String, voice: String) async {
         isGenerating = true
         isStreamPlaying = true
-        setStatus("Streaming…")
+        setStatus(statusPrefix + "Streaming…")
         streamPlayer.begin { [weak self] in
             guard let self else { return }
             self.isStreamPlaying = false
             if let format = self.streamPlayer.receivedFormat, !self.streamPlayer.receivedPCM.isEmpty {
                 self.lastClip = WAV.file(format: format, pcm: self.streamPlayer.receivedPCM)
             }
-            if !self.statusIsError { self.setStatus("Done.") }
+            if !self.statusIsError { self.setStatus(self.statusPrefix + "Done.") }
         }
         do {
             let client = try makeClient()
@@ -474,12 +532,13 @@ final class AppModel: ObservableObject {
                 chunks += 1
             }
             isGenerating = false
+            generationFinished()
             if chunks == 0 {
                 streamPlayer.stop()
                 isStreamPlaying = false
                 setError("The server finished without sending any audio.")
             } else {
-                setStatus("Playing…")
+                setStatus(statusPrefix + "Playing…")
                 streamPlayer.finishInput()
             }
         } catch is CancellationError {
@@ -489,17 +548,19 @@ final class AppModel: ObservableObject {
             isGenerating = false
             isStreamPlaying = false
             streamPlayer.stop()
-            setError(error.localizedDescription)
+            setError(statusPrefix + error.localizedDescription)
+            generationFinished()
         }
     }
 
     private func generate(_ input: String, model: String, language: String, voice: String, mode: OutputMode) async {
         isGenerating = true
-        setStatus("Generating…")
+        setStatus(statusPrefix + "Generating…")
         defer { isGenerating = false }
         do {
             let audio = try await makeClient().synthesize(text: input, model: model, language: language, voice: voice)
             guard !Task.isCancelled else { return }
+            generationFinished()
             lastClip = audio
             switch mode {
             case .play:
@@ -513,8 +574,70 @@ final class AppModel: ObservableObject {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            setError(error.localizedDescription)
+            setError(statusPrefix + error.localizedDescription)
+            generationFinished()
         }
+    }
+
+    // MARK: Roulette
+
+    /// The entry the current or last generation used, when roulette picked it.
+    @Published private(set) var currentRouletteEntry: RouletteEntry?
+
+    private var statusPrefix: String {
+        currentRouletteEntry.map { "🎲 \($0.title): " } ?? ""
+    }
+
+    /// The server is free again: pick the next entry and warm its model.
+    private func generationFinished() {
+        guard useRoulette, upNextID == nil else { return }
+        queueNextRouletteEntry(preload: true)
+    }
+
+    private func queueNextRouletteEntry(preload: Bool) {
+        preloadTask?.cancel()
+        guard rouletteEnabled, let next = RouletteEntry.pick(from: rouletteEntries, avoiding: lastRouletteID) else {
+            upNextID = nil
+            upNextState = .idle
+            return
+        }
+        upNextID = next.id
+        // The model that just ran is already warm.
+        guard preload, next.model != currentRouletteEntry?.model else {
+            upNextState = preload ? .ready : .idle
+            return
+        }
+        upNextState = .loading
+        preloadTask = Task {
+            do {
+                try await makeClient().loadModel(next.model)
+                guard !Task.isCancelled, upNextID == next.id else { return }
+                upNextState = .ready
+            } catch {
+                guard !Task.isCancelled, upNextID == next.id else { return }
+                upNextState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Adds the model, language and voice currently chosen in the pickers.
+    func addCurrentToRoulette() {
+        guard !selectedModel.isEmpty,
+              !rouletteEntries.contains(where: { $0.matches(model: selectedModel, language: selectedLanguage, voice: selectedVoice) })
+        else { return }
+        let modelLabel = models.first { $0.id == selectedModel }?.label ?? selectedModel
+        let voiceLabel = voices.first { $0.id == selectedVoice }?.label ?? selectedVoice
+        rouletteEntries.append(RouletteEntry(model: selectedModel, language: selectedLanguage, voice: selectedVoice,
+                                             modelLabel: modelLabel, voiceLabel: voiceLabel))
+    }
+
+    var canAddCurrentToRoulette: Bool {
+        !selectedModel.isEmpty
+            && !rouletteEntries.contains { $0.matches(model: selectedModel, language: selectedLanguage, voice: selectedVoice) }
+    }
+
+    func removeRouletteEntries(_ ids: Set<RouletteEntry.ID>) {
+        rouletteEntries.removeAll { ids.contains($0.id) }
     }
 
     // MARK: Files

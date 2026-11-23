@@ -4,6 +4,10 @@ import Foundation
 struct OpenVoxItem: Identifiable, Hashable {
     let id: String
     let label: String
+    /// False when the server reports the model isn't downloaded or can't run.
+    var isAvailable = true
+    /// The server's explanation, e.g. "Download the required native audio model…".
+    var detail: String?
 }
 
 enum OpenVoxError: LocalizedError {
@@ -307,10 +311,13 @@ struct OpenVoxClient {
         guard let object = value as? [String: Any] else { return nil }
         let idKeys = ["id", "code", "voice_id", "voice", "model", "language", "lang", "name"]
         guard let id = idKeys.lazy.compactMap({ object[$0] as? String }).first else { return nil }
+        var label = id
         if let name = displayName(in: object), name != id {
-            return OpenVoxItem(id: id, label: "\(name) (\(id))")
+            label = "\(name) (\(id))"
         }
-        return OpenVoxItem(id: id, label: id)
+        return OpenVoxItem(id: id, label: label,
+                           isAvailable: object["available"] as? Bool ?? true,
+                           detail: object["detail"] as? String)
     }
 
     private static func displayName(in object: [String: Any]) -> String? {

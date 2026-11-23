@@ -7,11 +7,17 @@ using the [OpenVox local API](https://openvoxai.com/support#local-api).
 - Paste text (or press **⇧⌘V** to paste and speak in one go), then **Speak** (**⌘↩**). **⌘.** stops.
 - **Server URL**, defaulting to `http://192.168.1.3:18778`. The `/v1` suffix is added for you.
 - **Model**, **Language** and **Voice** pickers filled from the server, plus a **Preload model** button that warms the model before your first request.
+- Models the server reports as unavailable (not downloaded, or missing a runtime) are hidden; **Show unavailable models** lists them too, with the server's reason shown when one is selected.
 - **Stream audio?** on: playback starts as soon as the first chunk arrives.
 - **Stream audio?** off, with a **When finished** dropdown:
   - **Play**: play/pause, position slider and volume slider.
   - **Save**: writes a `.wav` to a folder you choose (default `~/Music/OpenVox TTS`).
 - **Save last clip…** saves whatever you heard last, streamed or not.
+- **Roulette**: build a pool of model + language + voice combinations (pick them
+  in the pickers, press **+**). With Roulette on, each Speak uses a random entry
+  (never the same one twice in a row when there's a choice), and as soon as a
+  generation finishes the next entry is picked and its model preloaded, so it's
+  warm by the time you speak again.
 - **Text filters**: a list of regular expressions whose matches are stripped
   before speaking. **+** adds one, select and **−** (or Delete) removes, double-click
   edits, and each has an on/off checkbox. **Show filtered text** swaps the editor
