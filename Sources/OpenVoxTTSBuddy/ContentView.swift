@@ -153,6 +153,17 @@ private struct SettingsPane: View {
                 ItemPicker(title: "Voice", items: model.voices, selection: $model.selectedVoice, placeholder: "af_bella")
             }
 
+            Section {
+                Toggle("Roulette", isOn: $model.rouletteEnabled)
+                RouletteList()
+            } header: {
+                Text("Roulette")
+            } footer: {
+                Text("Pick a model, language and voice above, then press + to add them. With Roulette on, each Speak uses a random entry, and the next one’s model is preloaded as soon as a generation finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Output") {
                 Toggle("Stream audio?", isOn: $model.streamAudio)
                     .help("Start playing as soon as the first audio arrives")
@@ -534,5 +545,88 @@ private struct ShortcutRecorder: View {
         monitor = nil
         isRecording = false
         model.updateHotKeys(promptForAccess: false)
+    }
+}
+
+/// The roulette pool: + adds the current picker selection, − removes.
+private struct RouletteList: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var selection = Set<RouletteEntry.ID>()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            List(selection: $selection) {
+                ForEach(model.rouletteEntries) { entry in
+                    HStack(spacing: 6) {
+                        Text(entry.title)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if model.rouletteEnabled && entry.id == model.upNextID {
+                            UpNextBadge(state: model.upNextState)
+                        }
+                    }
+                    .tag(entry.id)
+                }
+            }
+            .listStyle(.bordered(alternatesRowBackgrounds: true))
+            .frame(height: 110)
+            .onDeleteCommand { removeSelected() }
+
+            HStack(spacing: 2) {
+                Button {
+                    model.addCurrentToRoulette()
+                } label: {
+                    Image(systemName: "plus").frame(width: 22, height: 18)
+                }
+                .disabled(!model.canAddCurrentToRoulette)
+                .help("Add the current model, language and voice")
+                Button {
+                    removeSelected()
+                } label: {
+                    Image(systemName: "minus").frame(width: 22, height: 18)
+                }
+                .disabled(selection.isEmpty)
+                .help("Remove the selected entries")
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+
+            if case .failed(let message) = model.upNextState, model.rouletteEnabled {
+                Label("Couldn’t preload the next model: \(message)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func removeSelected() {
+        model.removeRouletteEntries(selection)
+        selection = []
+    }
+}
+
+private struct UpNextBadge: View {
+    let state: UpNextState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            switch state {
+            case .loading:
+                ProgressView().controlSize(.mini)
+                Text("Loading")
+            case .ready:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("Up next")
+            case .failed:
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Up next")
+            case .idle:
+                Text("Up next")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .help("Picked for the next Speak")
     }
 }

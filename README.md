@@ -13,6 +13,11 @@ using the [OpenVox local API](https://openvoxai.com/support#local-api).
   - **Play**: play/pause, position slider and volume slider.
   - **Save**: writes a `.wav` to a folder you choose (default `~/Music/OpenVox TTS`).
 - **Save last clip…** saves whatever you heard last, streamed or not.
+- **Roulette**: build a pool of model + language + voice combinations (pick them
+  in the pickers, press **+**). With Roulette on, each Speak uses a random entry
+  (never the same one twice in a row when there's a choice), and as soon as a
+  generation finishes the next entry is picked and its model preloaded, so it's
+  warm by the time you speak again.
 - **Text filters**: a list of regular expressions whose matches are stripped
   before speaking. **+** adds one, select and **−** (or Delete) removes, double-click
   edits, and each has an on/off checkbox. **Show filtered text** swaps the editor
